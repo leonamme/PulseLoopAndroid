@@ -730,6 +730,8 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         val supportsGlucose: Boolean = false,
         val supportsManualHr: Boolean = false,
         val supportsManualSpo2: Boolean = false,
+        /** 30-day HRV baseline for the HRV card — see [VitalsCardFactory.Inputs.hrvBaseline]. */
+        val hrvBaseline: com.pulseloop.service.BaselineStats? = null,
     )
 
     private val _state = MutableStateFlow(VitalsState())
@@ -836,8 +838,22 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
         // as a measurement unless we say otherwise. Judged from this ring's own history (not its
         // family), and only hourly composite rows qualify — a spot reading is a real measurement.
         val spo2Estimated = if (spo2.isEmpty()) emptySet()
-            else EstimatedSpo2.estimatedTimestamps(db.measurementDao(), twentyFourHoursAgo, now, now)
+        else EstimatedSpo2.estimatedTimestamps(db.measurementDao(), twentyFourHoursAgo, now, now)
 
+        // HRV baseline must be computed from a wider window than the 24h series that feeds
+        // the card — the estimator needs spanDays >= 7, which a single day can never reach.
+        // Compute it once here and hand it to the card factory so the main Vitals screen and
+        // the detail screen agree.
+        val hrvBaseline = if (caps.contains(WearableCapability.HRV)) {
+            val hrvSamples = db.measurementDao().range(
+                MeasurementKind.HRV.name,
+                now - 30L * 86_400_000L,
+                now,
+            )
+            com.pulseloop.service.BaselineStats.compute(
+                hrvSamples.map { VitalSample(it.timestamp, it.value) },
+            )
+        } else null
         return VitalsState(
             hrSamples = hr.map { it.value },
             spo2Samples = spo2.map { it.value },
@@ -888,6 +904,7 @@ class VitalsViewModel(private val db: PulseLoopDatabase, private val apiKeyStore
             supportsGlucose = caps.contains(WearableCapability.BLOOD_SUGAR),
             supportsManualHr = caps.contains(WearableCapability.MANUAL_HEART_RATE),
             supportsManualSpo2 = caps.contains(WearableCapability.MANUAL_SPO2),
+            hrvBaseline = hrvBaseline,
         )
     }
 
@@ -944,6 +961,7 @@ fun VitalsViewModel.VitalsState.toCardInputs(units: UnitSystem): VitalsCardFacto
         unitSystem = units,
         hasBPReference = hasBPReference,
         isGlucoseCalibrated = isGlucoseCalibrated,
+        hrvBaseline = hrvBaseline,
     )
 
 /**
@@ -1332,11 +1350,26 @@ class VitalDetailViewModel(
      * shape the interactive detail chart consumes — the PR #5 chart machinery is untouched;
      * only the zone table it colors from changes. Open-ended engine bounds clamp to the static
      * table's display range so the bar/domain stay finite.
+     *
+     * HRV's zones are baseline-relative, and the baseline must not be scoped to the display
+     * window (24h on the Today tab never reaches the 7-day span the estimator requires). We use
+     * a fixed 30-day lookback so the baseline reflects recent history regardless of which period
+     * the user is viewing.
      */
-    private fun engineThresholds(metricKey: String, physiology: UserPhysiologyProfile): MetricThresholds? {
+    private suspend fun engineThresholds(metricKey: String, physiology: UserPhysiologyProfile): MetricThresholds? {
         val kind = engineKind(metricKey) ?: return null
         val base = MetricThresholdTable.forKey(metricKey) ?: return null
-        val zones = com.pulseloop.service.VitalsThresholdEngine.zones(kind, physiology)
+        val baseline = if (kind == com.pulseloop.service.MetricKind.HRV) {
+            val hrvSamples = db.measurementDao().range(
+                MeasurementKind.HRV.name,
+                System.currentTimeMillis() - 30L * 86_400_000L,
+                System.currentTimeMillis(),
+            )
+            com.pulseloop.service.BaselineStats.compute(
+                hrvSamples.map { VitalSample(it.timestamp, it.value) },
+            )
+        } else null
+        val zones = com.pulseloop.service.VitalsThresholdEngine.zones(kind, physiology, baseline = baseline)
         if (zones.isEmpty()) return null
         return base.copy(
             zones = zones.map { z ->
@@ -1505,15 +1538,20 @@ class VitalDetailViewModel(
 
             // HRV zones are baseline-relative; the detail window (Week/Month) carries enough
             // history to establish one (iOS `baselineForChart`).
-            // A calendar Day holds only the hours since midnight, too few early on, so Day keeps the
-            // last 24 h it used to show (issue #102 review).
-            val baselineSamples = if (metric == "hrv" && period == Period.DAY) {
-                val end = minOf(now, windowEnd)
-                dao.range(kindName, end - 86_400_000L, end)
-            } else samples
-            val baseline = if (metric == "hrv")
-                com.pulseloop.service.BaselineStats.compute(baselineSamples.map { VitalSample(it.timestamp, it.value) })
-            else null
+            // HRV baseline must not be scoped to the display window — on the Today tab the
+            // window is only 24h, so spanDays never reaches the 7 the estimator requires and
+            // the metric sits in "Building baseline" forever despite weeks of readings. Use a
+            // fixed 30-day lookback so the baseline always reflects recent history regardless
+            // of which period the user is viewing.
+            val baseline = if (metric == "hrv") {
+                val baselineWindowStart = System.currentTimeMillis() - 30L * 86_400_000L
+                val baselineSamples = dao.range(
+                    kindName, baselineWindowStart, System.currentTimeMillis(),
+                )
+                com.pulseloop.service.BaselineStats.compute(
+                    baselineSamples.map { VitalSample(it.timestamp, it.value) },
+                )
+            } else null
             val engineZones = engineKind(metric)?.let { k ->
                 com.pulseloop.service.VitalsThresholdEngine.zones(k, physiology, baseline = baseline)
             } ?: emptyList()
