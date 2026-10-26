@@ -297,11 +297,11 @@ fun ActivityScreen(
 
 /** recentDays keyed to this week's Monday..Sunday slots (nulls before tracking started). */
 private fun weeklySteps(state: ActivityViewModel.ActivityState, todayIdx: Int): Map<Int, Int> {
-    val dayMs = 86_400_000L
-    val todayStart = com.pulseloop.util.TimeUtil.startOfTodayLocal()
+    val todayDate = java.time.Instant.ofEpochMilli(com.pulseloop.util.TimeUtil.startOfTodayLocal()).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
     val byDate = state.recentDays.associate { it.date to it.steps }
     return (0..todayIdx).associateWith { i ->
-        byDate[todayStart - (todayIdx - i) * dayMs] ?: 0
+        val dayStart = todayDate.minusDays((todayIdx - i).toLong()).atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        byDate[dayStart] ?: 0
     }
 }
 
@@ -363,9 +363,9 @@ private fun ActivityNavChevron(
 
 /** Same phrasing as Sleep's header: Today / Yesterday / weekday / date. */
 private fun dayHeaderLabel(dayMillis: Long): String {
-    val today = com.pulseloop.util.TimeUtil.startOfTodayLocal()
-    val daysAgo = ((today - dayMillis) / 86_400_000L).toInt()
+    val today = java.time.Instant.ofEpochMilli(com.pulseloop.util.TimeUtil.startOfTodayLocal()).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
     val date = Instant.ofEpochMilli(dayMillis).atZone(ZoneId.systemDefault())
+    val daysAgo = java.time.temporal.ChronoUnit.DAYS.between(date.toLocalDate(), today).toInt()
     return when {
         daysAgo <= 0 -> "Today"
         daysAgo == 1 -> "Yesterday"

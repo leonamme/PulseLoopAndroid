@@ -304,7 +304,9 @@ class SleepViewModel(
 
         // ── Day view (the currently shown day; may be a past day when navigating) ──
         val offset = _state.value.dayOffset
-        val shownNow = System.currentTimeMillis() - offset * 86_400_000L
+        val todayRef = Instant.now().atZone(ZoneId.systemDefault()).toLocalDate()
+        val shownDate = todayRef.minusDays(offset.toLong())
+        val shownNow = shownDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
         val shownReference = TimeUtil.referenceNightLocal(shownNow)
         // A day can hold BOTH a ring night and a seeded demo one — the seeder's guard only skips
         // days that already have ring data, and since PR #52 a connect no longer purges demo rows
@@ -400,9 +402,10 @@ class SleepViewModel(
      */
     private fun maxDayOffset(earliestDay: Long?): Int {
         if (earliestDay == null) return 0
-        val today = TimeUtil.startOfTodayLocal()
-        val floor = maxOf(earliestDay - 7 * 86_400_000L, today - 365 * 86_400_000L)
-        return ((today - floor) / 86_400_000L).toInt().coerceAtLeast(0)
+        val today = Instant.ofEpochMilli(TimeUtil.startOfTodayLocal()).atZone(ZoneId.systemDefault()).toLocalDate()
+        val earliest = Instant.ofEpochMilli(earliestDay).atZone(ZoneId.systemDefault()).toLocalDate()
+        val floor = maxOf(earliest.minusDays(7), today.minusDays(365))
+        return java.time.temporal.ChronoUnit.DAYS.between(floor, today).toInt().coerceAtLeast(0)
     }
 
     // ── Day navigation (iOS #84) ──
@@ -438,8 +441,9 @@ class SleepViewModel(
 
     /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
     fun jumpToDay(dayMillis: Long) {
-        val today = TimeUtil.startOfTodayLocal()
-        jumpToOffset(((today - TimeUtil.startOfDayLocal(dayMillis)) / 86_400_000L).toInt())
+        val today = Instant.ofEpochMilli(TimeUtil.startOfTodayLocal()).atZone(ZoneId.systemDefault()).toLocalDate()
+        val date = Instant.ofEpochMilli(dayMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+        jumpToOffset(java.time.temporal.ChronoUnit.DAYS.between(date, today).toInt())
     }
 
     /** Return the Day view to today (called when re-entering Day from an aggregate range). */
@@ -615,8 +619,9 @@ class ActivityViewModel(
 
     /** Jump to the day at [dayMillis] (a local-midnight key), clamped to the valid range. */
     fun jumpToDay(dayMillis: Long) {
-        val today = TimeUtil.startOfTodayLocal()
-        jumpToOffset(((today - TimeUtil.startOfDayLocal(dayMillis)) / 86_400_000L).toInt())
+        val today = Instant.ofEpochMilli(TimeUtil.startOfTodayLocal()).atZone(ZoneId.systemDefault()).toLocalDate()
+        val date = Instant.ofEpochMilli(dayMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+        jumpToOffset(java.time.temporal.ChronoUnit.DAYS.between(date, today).toInt())
     }
 
     /** Return the dashboard to today. */
@@ -624,7 +629,8 @@ class ActivityViewModel(
 
     private fun jumpToOffset(target: Int) {
         val clamped = target.coerceIn(0, _state.value.maxDayOffset)
-        val shown = TimeUtil.startOfTodayLocal() - clamped * 86_400_000L
+        val todayDate = Instant.ofEpochMilli(TimeUtil.startOfTodayLocal()).atZone(ZoneId.systemDefault()).toLocalDate()
+        val shown = todayDate.minusDays(clamped.toLong()).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
         shownDayStart.value = shown
         _state.update { it.copy(dayOffset = clamped, shownDay = shown) }
     }
@@ -634,9 +640,10 @@ class ActivityViewModel(
     private suspend fun refreshMaxDayOffset() {
         val earliest = try { db.activityDailyDao().earliestDay() } catch (_: Exception) { null }
         val maxOffset = if (earliest == null) 0 else {
-            val today = TimeUtil.startOfTodayLocal()
-            val floor = maxOf(earliest - 7 * 86_400_000L, today - 365 * 86_400_000L)
-            ((today - floor) / 86_400_000L).toInt().coerceAtLeast(0)
+            val today = Instant.ofEpochMilli(TimeUtil.startOfTodayLocal()).atZone(ZoneId.systemDefault()).toLocalDate()
+            val earliestDate = Instant.ofEpochMilli(earliest).atZone(ZoneId.systemDefault()).toLocalDate()
+            val floor = maxOf(earliestDate.minusDays(7), today.minusDays(365))
+            java.time.temporal.ChronoUnit.DAYS.between(floor, today).toInt().coerceAtLeast(0)
         }
         _state.update { it.copy(maxDayOffset = maxOffset) }
     }
