@@ -306,7 +306,9 @@ class SleepViewModel(
         val offset = _state.value.dayOffset
         val todayRef = Instant.now().atZone(ZoneId.systemDefault()).toLocalDate()
         val shownDate = todayRef.minusDays(offset.toLong())
-        val shownNow = shownDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        // Use noon to safely clear the 4 AM cutoff logic in referenceNightLocal.
+        // Passing midnight caused it to resolve to yesterday's night, showing old data.
+        val shownNow = shownDate.atTime(12, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
         val shownReference = TimeUtil.referenceNightLocal(shownNow)
         // A day can hold BOTH a ring night and a seeded demo one — the seeder's guard only skips
         // days that already have ring data, and since PR #52 a connect no longer purges demo rows
